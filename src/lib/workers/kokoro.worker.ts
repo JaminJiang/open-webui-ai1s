@@ -1,8 +1,5 @@
-import { env } from '@huggingface/transformers';
-import { KokoroTTS } from 'kokoro-js';
-
-// TODO: Below doesn't work as expected, need to investigate further
-env.backends.onnx.wasm.wasmPaths = '/wasm/';
+// workers/kokoro.worker.ts
+// import { KokoroTTS } from 'kokoro-js';
 
 let tts;
 let isInitialized = false; // Flag to track initialization status
@@ -18,12 +15,18 @@ self.onmessage = async (event) => {
 		self.postMessage({ status: 'init:start' });
 
 		try {
-			tts = await KokoroTTS.from_pretrained(model_id, {
-				dtype,
-				device: !!navigator?.gpu ? 'webgpu' : 'wasm' // Detect WebGPU
-			});
-			isInitialized = true; // Mark as initialized after successful loading
-			self.postMessage({ status: 'init:complete' });
+			// 初始化KokoroTTS，移除transformers相关的环境依赖
+			// tts = await KokoroTTS.from_pretrained(model_id, {
+			// 	dtype,
+			// 	// 调整设备检测逻辑（如果kokoro-js自身支持WebGPU/wasm配置）
+			// 	// 注：如果kokoro-js不需要device参数，可移除该配置
+			// 	device: !!navigator?.gpu ? 'webgpu' : 'wasm'
+			// });
+			// isInitialized = true; // Mark as initialized after successful loading
+			// self.postMessage({ status: 'init:complete' });
+			if (true) {
+				throw new Error('KokoroTTS not supported in this environment');
+			}
 		} catch (error) {
 			isInitialized = false; // Ensure it's marked as false on failure
 			self.postMessage({ status: 'init:error', error: error.message });

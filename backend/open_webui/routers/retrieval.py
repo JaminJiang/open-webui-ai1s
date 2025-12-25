@@ -130,6 +130,7 @@ def get_ef(
         from sentence_transformers import SentenceTransformer
 
         try:
+            log.info(f"Start loading SentenceTransformer.")
             ef = SentenceTransformer(
                 get_model_path(embedding_model, auto_update),
                 device=DEVICE_TYPE,
@@ -137,6 +138,7 @@ def get_ef(
                 backend=SENTENCE_TRANSFORMERS_BACKEND,
                 model_kwargs=SENTENCE_TRANSFORMERS_MODEL_KWARGS,
             )
+            log.info(f"Finish loading SentenceTransformer.")
         except Exception as e:
             log.debug(f"Error loading SentenceTransformer: {e}")
 
@@ -1230,7 +1232,7 @@ async def update_rag_config(
 ####################################
 
 
-def save_docs_to_vector_db(
+async def save_docs_to_vector_db(
     request: Request,
     docs,
     collection_name,
@@ -1404,13 +1406,39 @@ def save_docs_to_vector_db(
         )
 
         # Run async embedding in sync context
-        embeddings = asyncio.run(
-            embedding_function(
-                list(map(lambda x: x.replace("\n", " "), texts)),
-                prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-                user=user,
-            )
+        # embeddings = asyncio.run(
+        #     embedding_function(
+        #         list(map(lambda x: x.replace("\n", " "), texts)),
+        #         prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+        #         user=user,
+        #     )
+        # )
+        # # Run async embedding in sync context
+        # try:
+        #     loop = asyncio.get_running_loop()
+        #     # 如果有运行中的事件循环，使用 create_task 或 run_until_complete
+        #     embeddings = loop.run_until_complete(
+        #         embedding_function(
+        #             list(map(lambda x: x.replace("\n", " "), texts)),
+        #             prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+        #             user=user,
+        #         )
+        #     )
+        # except RuntimeError:
+        #     # 如果没有运行中的事件循环，使用 asyncio.run
+        #     embeddings = asyncio.run(
+        #         embedding_function(
+        #             list(map(lambda x: x.replace("\n", " "), texts)),
+        #             prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+        #             user=user,
+        #         )
+        #     )
+        embeddings = await embedding_function(
+            list(map(lambda x: x.replace("\n", " "), texts)),
+            prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+            user=user,
         )
+        
         log.info(f"embeddings generated {len(embeddings)} for {len(texts)} items")
 
         items = [
@@ -1443,7 +1471,7 @@ class ProcessFileForm(BaseModel):
 
 
 @router.post("/process/file")
-def process_file(
+async def process_file(
     request: Request,
     form_data: ProcessFileForm,
     user=Depends(get_verified_user),
@@ -1609,7 +1637,8 @@ def process_file(
                 }
             else:
                 try:
-                    result = save_docs_to_vector_db(
+                    # result = save_docs_to_vector_db(
+                    result = await save_docs_to_vector_db(
                         request,
                         docs=docs,
                         collection_name=collection_name,
@@ -1696,9 +1725,10 @@ async def process_text(
     text_content = form_data.content
     log.debug(f"text_content: {text_content}")
 
-    result = await run_in_threadpool(
-        save_docs_to_vector_db, request, docs, collection_name, user=user
-    )
+    # result = await run_in_threadpool(
+    #     save_docs_to_vector_db, request, docs, collection_name, user=user
+    # )
+    result = await save_docs_to_vector_db(request, docs, collection_name, user=user)
     if result:
         return {
             "status": True,
@@ -1728,8 +1758,9 @@ async def process_web(
         log.debug(f"text_content: {content}")
 
         if not request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:
-            await run_in_threadpool(
-                save_docs_to_vector_db,
+            # await run_in_threadpool(
+            #     save_docs_to_vector_db,
+            await save_docs_to_vector_db(
                 request,
                 docs,
                 collection_name,
@@ -2162,8 +2193,9 @@ async def process_web_search(
             )
 
             try:
-                await run_in_threadpool(
-                    save_docs_to_vector_db,
+                # await run_in_threadpool(
+                #     save_docs_to_vector_db,
+                await save_docs_to_vector_db(
                     request,
                     docs,
                     collection_name,
@@ -2476,8 +2508,9 @@ async def process_files_batch(
     # Save all documents in one batch
     if all_docs:
         try:
-            await run_in_threadpool(
-                save_docs_to_vector_db,
+            # await run_in_threadpool(
+            #     save_docs_to_vector_db,
+            await save_docs_to_vector_db(
                 request,
                 all_docs,
                 collection_name,

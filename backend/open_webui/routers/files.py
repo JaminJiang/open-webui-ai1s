@@ -99,7 +99,7 @@ def has_access_to_file(
 ############################
 
 
-def process_uploaded_file(request, file, file_path, file_item, file_metadata, user):
+async def process_uploaded_file(request, file, file_path, file_item, file_metadata, user):
     try:
         if file.content_type:
             stt_supported_content_types = getattr(
@@ -118,7 +118,7 @@ def process_uploaded_file(request, file, file_path, file_item, file_metadata, us
                 file_path = Storage.get_file(file_path)
                 result = transcribe(request, file_path, file_metadata, user)
 
-                process_file(
+                await process_file(
                     request,
                     ProcessFileForm(
                         file_id=file_item.id, content=result.get("text", "")
@@ -128,7 +128,7 @@ def process_uploaded_file(request, file, file_path, file_item, file_metadata, us
             elif (not file.content_type.startswith(("image/", "video/"))) or (
                 request.app.state.config.CONTENT_EXTRACTION_ENGINE == "external"
             ):
-                process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
+                await process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
             else:
                 raise Exception(
                     f"File type {file.content_type} is not supported for processing"
@@ -137,7 +137,7 @@ def process_uploaded_file(request, file, file_path, file_item, file_metadata, us
             log.info(
                 f"File type {file.content_type} is not provided, but trying to process anyway"
             )
-            process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
+            await process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
     except Exception as e:
         log.error(f"Error processing file: {file_item.id}")
         Files.update_file_data_by_id(
@@ -515,7 +515,7 @@ async def update_file_data_content_by_id(
         or has_access_to_file(id, "write", user)
     ):
         try:
-            process_file(
+            await process_file(
                 request,
                 ProcessFileForm(file_id=id, content=form_data.content),
                 user=user,

@@ -14,18 +14,20 @@
 
 	const i18n = getContext('i18n');
 
-	const EMBEDDING_MODEL = 'TaylorAI/bge-micro-v2';
+	// 移除嵌入模型相关常量
+	// const EMBEDDING_MODEL = 'TaylorAI/bge-micro-v2';
 
-	let tokenizer = null;
-	let model = null;
+	// 移除嵌入相关变量
+	// let tokenizer = null;
+	// let model = null;
 
 	export let feedbacks = [];
 
 	let rankedModels = [];
 
 	let query = '';
-
-	let tagEmbeddings = new Map();
+	// 移除嵌入相关变量
+	// let tagEmbeddings = new Map();
 	let loadingLeaderboard = true;
 	let debounceTimer;
 
@@ -89,8 +91,9 @@
 	//
 	//////////////////////
 
-	const rankHandler = async (similarities: Map<string, number> = new Map()) => {
-		const modelStats = calculateModelStats(feedbacks, similarities);
+	// 简化rankHandler，移除similarities参数（始终传空Map）
+	const rankHandler = async () => {
+		const modelStats = calculateModelStats(feedbacks);
 
 		rankedModels = $models
 			.filter((m) => m?.owned_by !== 'arena' && (m?.info?.meta?.hidden ?? false) !== true)
@@ -116,9 +119,9 @@
 		loadingLeaderboard = false;
 	};
 
+	// 简化calculateModelStats，移除similarities参数和相关逻辑
 	function calculateModelStats(
-		feedbacks: Feedback[],
-		similarities: Map<string, number>
+		feedbacks: Feedback[]
 	): Map<string, ModelStats> {
 		const stats = new Map<string, ModelStats>();
 		const K = 32;
@@ -135,14 +138,14 @@
 			stats.set(modelId, currentStats);
 		}
 
+		// 简化calculateEloChange，移除similarity参数（始终乘1）
 		function calculateEloChange(
 			ratingA: number,
 			ratingB: number,
-			outcome: number,
-			similarity: number
+			outcome: number
 		): number {
 			const expectedScore = 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
-			return K * (outcome - expectedScore) * similarity;
+			return K * (outcome - expectedScore);
 		}
 
 		feedbacks.forEach((feedback) => {
@@ -163,14 +166,13 @@
 					return; // Skip invalid ratings
 			}
 
-			// If the query is empty, set similarity to 1, else get the similarity from the map
-			const similarity = query !== '' ? similarities.get(feedback.id) || 0 : 1;
+			// 移除similarity相关逻辑，始终使用1
 			const opponents = feedback.data.sibling_model_ids || [];
 
 			opponents.forEach((modelB) => {
 				const statsB = getOrDefaultStats(modelB);
-				const changeA = calculateEloChange(statsA.rating, statsB.rating, outcome, similarity);
-				const changeB = calculateEloChange(statsB.rating, statsA.rating, 1 - outcome, similarity);
+				const changeA = calculateEloChange(statsA.rating, statsB.rating, outcome);
+				const changeB = calculateEloChange(statsB.rating, statsA.rating, 1 - outcome);
 
 				updateStats(modelA, changeA, outcome);
 				updateStats(modelB, changeB, 1 - outcome);
@@ -180,124 +182,22 @@
 		return stats;
 	}
 
-	//////////////////////
-	//
-	// Calculate cosine similarity
-	//
-	//////////////////////
+	// 移除所有嵌入相关函数
+	// const cosineSimilarity = (vecA, vecB) => { ... }
+	// const calculateMaxSimilarity = (queryEmbedding, tagEmbeddings: Map<string, number[]>) => { ... }
+	const loadEmbeddingModel = async () => { return; }
+	// const getEmbeddings = async (text: string) => { ... }
+	// const getTagEmbeddings = async (tags: string[]) => { ... }
 
-	const cosineSimilarity = (vecA, vecB) => {
-		// Ensure the lengths of the vectors are the same
-		if (vecA.length !== vecB.length) {
-			throw new Error('Vectors must be the same length');
-		}
-
-		// Calculate the dot product
-		let dotProduct = 0;
-		let normA = 0;
-		let normB = 0;
-
-		for (let i = 0; i < vecA.length; i++) {
-			dotProduct += vecA[i] * vecB[i];
-			normA += vecA[i] ** 2;
-			normB += vecB[i] ** 2;
-		}
-
-		// Calculate the magnitudes
-		normA = Math.sqrt(normA);
-		normB = Math.sqrt(normB);
-
-		// Avoid division by zero
-		if (normA === 0 || normB === 0) {
-			return 0;
-		}
-
-		// Return the cosine similarity
-		return dotProduct / (normA * normB);
-	};
-
-	const calculateMaxSimilarity = (queryEmbedding, tagEmbeddings: Map<string, number[]>) => {
-		let maxSimilarity = 0;
-		for (const tagEmbedding of tagEmbeddings.values()) {
-			const similarity = cosineSimilarity(queryEmbedding, tagEmbedding);
-			maxSimilarity = Math.max(maxSimilarity, similarity);
-		}
-		return maxSimilarity;
-	};
-
-	//////////////////////
-	//
-	// Embedding functions
-	//
-	//////////////////////
-
-	const loadEmbeddingModel = async () => {
-		const { env, AutoModel, AutoTokenizer } = await import('@huggingface/transformers');
-		if (env.backends.onnx.wasm) {
-			env.backends.onnx.wasm.wasmPaths = '/wasm/';
-		}
-
-		// Check if the tokenizer and model are already loaded and stored in the window object
-		if (!window.tokenizer) {
-			window.tokenizer = await AutoTokenizer.from_pretrained(EMBEDDING_MODEL);
-		}
-
-		if (!window.model) {
-			window.model = await AutoModel.from_pretrained(EMBEDDING_MODEL);
-		}
-
-		// Use the tokenizer and model from the window object
-		tokenizer = window.tokenizer;
-		model = window.model;
-
-		// Pre-compute embeddings for all unique tags
-		const allTags = new Set(feedbacks.flatMap((feedback) => feedback.data.tags || []));
-		await getTagEmbeddings(Array.from(allTags));
-	};
-
-	const getEmbeddings = async (text: string) => {
-		const tokens = await tokenizer(text);
-		const output = await model(tokens);
-
-		// Perform mean pooling on the last hidden states
-		const embeddings = output.last_hidden_state.mean(1);
-		return embeddings.ort_tensor.data;
-	};
-
-	const getTagEmbeddings = async (tags: string[]) => {
-		const embeddings = new Map();
-		for (const tag of tags) {
-			if (!tagEmbeddings.has(tag)) {
-				tagEmbeddings.set(tag, await getEmbeddings(tag));
-			}
-			embeddings.set(tag, tagEmbeddings.get(tag));
-		}
-		return embeddings;
-	};
-
+	// 简化debouncedQueryHandler，仅做基础的rankHandler调用
 	const debouncedQueryHandler = async () => {
 		loadingLeaderboard = true;
-
-		if (query.trim() === '') {
-			rankHandler();
-			return;
-		}
-
 		clearTimeout(debounceTimer);
 
 		debounceTimer = setTimeout(async () => {
-			const queryEmbedding = await getEmbeddings(query);
-			const similarities = new Map<string, number>();
-
-			for (const feedback of feedbacks) {
-				const feedbackTags = feedback.data.tags || [];
-				const tagEmbeddings = await getTagEmbeddings(feedbackTags);
-				const maxSimilarity = calculateMaxSimilarity(queryEmbedding, tagEmbeddings);
-				similarities.set(feedback.id, maxSimilarity);
-			}
-
-			rankHandler(similarities);
-		}, 1500); // Debounce for 1.5 seconds
+			// 无论query是否为空，都直接调用rankHandler（不再计算相似度）
+			rankHandler();
+		}, 1500); // 保留防抖逻辑，可根据需要调整时长
 	};
 
 	$: query, debouncedQueryHandler();
@@ -314,7 +214,7 @@
 			return direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
 		} else if (orderBy === 'rating') {
 			aVal = a.rating === '-' ? -Infinity : a.rating;
-			bVal = b.rating === '-' ? -Infinity : b.rating;
+			bVal = b.rating === '-' ? -Infinity : bVal;
 			return direction === 'asc' ? aVal - bVal : bVal - aVal;
 		} else if (orderBy === 'won') {
 			aVal = a.stats.won === '-' ? -Infinity : Number(a.stats.won);
@@ -359,9 +259,7 @@
 					class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
 					bind:value={query}
 					placeholder={$i18n.t('Search')}
-					on:focus={() => {
-						loadEmbeddingModel();
-					}}
+					on:focus={() => { loadEmbeddingModel(); }}
 				/>
 			</div>
 		</Tooltip>
