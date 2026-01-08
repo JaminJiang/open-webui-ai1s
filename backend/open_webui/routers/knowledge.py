@@ -148,9 +148,8 @@ async def reindex_knowledge_files(request: Request, user=Depends(get_verified_us
             failed_files = []
             for file in files:
                 try:
-                    # await run_in_threadpool(
-                    #     process_file,
-                    await process_file(
+                    await run_in_threadpool(
+                        process_file,
                         request,
                         ProcessFileForm(
                             file_id=file.id, collection_name=knowledge_base.id
@@ -299,6 +298,7 @@ async def add_file_to_knowledge_by_id(
         )
 
     file = Files.get_file_by_id(form_data.file_id)
+    log.error(f"[test]add_file_to_knowledge_by_id get file:{file}")
     if not file:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -317,7 +317,7 @@ async def add_file_to_knowledge_by_id(
 
     # Add content to the vector database
     try:
-        await process_file(
+        process_file(
             request,
             ProcessFileForm(file_id=form_data.file_id, collection_name=id),
             user=user,
@@ -380,7 +380,7 @@ async def update_file_from_knowledge_by_id(
 
     # Add content to the vector database
     try:
-        await process_file(
+        process_file(
             request,
             ProcessFileForm(file_id=form_data.file_id, collection_name=id),
             user=user,
@@ -442,9 +442,13 @@ def remove_file_from_knowledge_by_id(
     Knowledges.remove_file_from_knowledge_by_id(
         knowledge_id=id, file_id=form_data.file_id
     )
-
+    
+    log.error(f"[test]remove_file_from_knowledge_by_id id:{id}, form_data:{form_data}, hash: {file.hash}")
     # Remove content from the vector database
     try:
+        # res1 = VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={"file_id": form_data.file_id})
+        # res2 = VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={"hash": file.hash})
+        # log.error(f"[test]remove_file_from_knowledge_by_id before delete get res1:{res1}, res2:{res2}")
         VECTOR_DB_CLIENT.delete(
             collection_name=knowledge.id, filter={"file_id": form_data.file_id}
         )  # Remove by file_id first
@@ -452,20 +456,38 @@ def remove_file_from_knowledge_by_id(
         VECTOR_DB_CLIENT.delete(
             collection_name=knowledge.id, filter={"hash": file.hash}
         )  # Remove by hash as well in case of duplicates
+        # res1 = VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={"file_id": form_data.file_id})
+        # res2 = VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={"hash": file.hash})
+        # log.error(f"[test]remove_file_from_knowledge_by_id after delete get res1:{res1}, res2:{res2}")
     except Exception as e:
         log.debug("This was most likely caused by bypassing embedding processing")
         log.debug(e)
+        log.error(f"[test]delete file failed, e:{e}")
         pass
-
+    
+    log.error(f"[test]delete_file:{delete_file}")
     if delete_file:
         try:
             # Remove the file's collection from vector database
             file_collection = f"file-{form_data.file_id}"
-            if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
-                VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+            # log.error(f"file_collection:{file_collection}")
+            # log.error(f"before has_collection:{VECTOR_DB_CLIENT.has_collection(collection_name=file_collection)}")
+            # res1 = VECTOR_DB_CLIENT.query(collection_name=file_collection, filter={"file_id": form_data.file_id})
+            # res2 = VECTOR_DB_CLIENT.query(collection_name=file_collection, filter={"hash": file.hash})
+            # log.error(f"remove_file_from_knowledge_by_id before delete get file_collection res1:{res1}, res2:{res2}")
+            # if VECTOR_DB_CLIENT.has_collection(collection_name=file_collection):
+            #     VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+            #     log.error(f"now start the second delete")
+            #     VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
+            # log.error(f"after has_collection:{VECTOR_DB_CLIENT.has_collection(collection_name=file_collection)}")
+            # res1 = VECTOR_DB_CLIENT.query(collection_name=file_collection, filter={"file_id": form_data.file_id})
+            # res2 = VECTOR_DB_CLIENT.query(collection_name=file_collection, filter={"hash": file.hash})
+            # log.error(f"remove_file_from_knowledge_by_id after delete get file_collection res1:{res1}, res2:{res2}")
+            VECTOR_DB_CLIENT.delete_collection(collection_name=file_collection)
         except Exception as e:
             log.debug("This was most likely caused by bypassing embedding processing")
             log.debug(e)
+            log.error(f"delete file failed:{e}")
             pass
 
         # Delete file from database

@@ -113,6 +113,8 @@ from open_webui.constants import ERROR_MESSAGES
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
 
+AI_SITES_FILE_ID_PREFIX = "ai1s_site_"
+
 ##########################################
 #
 # Utility functions
@@ -120,29 +122,127 @@ log.setLevel(SRC_LOG_LEVELS["RAG"])
 ##########################################
 
 
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+# 用于存储模型加载状态和实例的全局字典
+_embedding_model_states = {}
+_embedding_model_lock = threading.Lock()
+
+class EmbeddingModelState:
+    def __init__(self):
+        self.model = None
+        self.loading = False
+        self.loaded = False
+        self.future = None
+        self.lock = threading.Lock()
+
+
 def get_ef(
     engine: str,
     embedding_model: str,
     auto_update: bool = RAG_EMBEDDING_MODEL_AUTO_UPDATE,
 ):
-    ef = None
-    if embedding_model and engine == "":
+    if not embedding_model or engine != "":
+        return None
+    
+    # 获取或创建模型状态
+    with _embedding_model_lock:
+        if embedding_model not in _embedding_model_states:
+            _embedding_model_states[embedding_model] = EmbeddingModelState()
+    
+    state = _embedding_model_states[embedding_model]
+    
+    # 如果模型已加载，直接返回
+    with state.lock:
+        if state.loaded:
+            return state.model
+        
+        # 如果模型正在加载，返回 None 表示需要异步等待
+        return None
+
+
+async def load_ef_async(
+    engine: str,
+    embedding_model: str,
+    auto_update: bool = RAG_EMBEDDING_MODEL_AUTO_UPDATE,
+):
+    if not embedding_model or engine != "":
+        return None
+    
+    # 获取或创建模型状态
+    with _embedding_model_lock:
+        if embedding_model not in _embedding_model_states:
+            _embedding_model_states[embedding_model] = EmbeddingModelState()
+    
+    state = _embedding_model_states[embedding_model]
+    
+    with state.lock:
+        # 如果模型已加载，直接返回
+        if state.loaded:
+            return state.model
+        
+        # 如果模型正在加载，等待加载完成
+        if state.loading:
+            if state.future:
+                await state.future
+            return state.model
+        
+        # 开始加载模型
+        state.loading = True
+        
+        # 创建一个 future 用于等待加载完成
+        loop = asyncio.get_event_loop()
+        state.future = loop.create_future()
+    
+    try:
         from sentence_transformers import SentenceTransformer
-
-        try:
-            log.info(f"Start loading SentenceTransformer.")
-            ef = SentenceTransformer(
-                get_model_path(embedding_model, auto_update),
-                device=DEVICE_TYPE,
-                trust_remote_code=RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
-                backend=SENTENCE_TRANSFORMERS_BACKEND,
-                model_kwargs=SENTENCE_TRANSFORMERS_MODEL_KWARGS,
-            )
+        
+        log.info(f"Start loading SentenceTransformer.")
+        
+        # 使用线程池在后台加载模型
+        def load_model():
+            try:
+                return SentenceTransformer(
+                    get_model_path(embedding_model, auto_update),
+                    device=DEVICE_TYPE,
+                    trust_remote_code=RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
+                    backend=SENTENCE_TRANSFORMERS_BACKEND,
+                    model_kwargs=SENTENCE_TRANSFORMERS_MODEL_KWARGS,
+                )
+            except Exception as e:
+                log.debug(f"Error loading SentenceTransformer: {e}")
+                return None
+        
+        # 在后台线程中加载模型
+        with ThreadPoolExecutor() as executor:
+            ef = await loop.run_in_executor(executor, load_model)
+        
+        with state.lock:
+            state.model = ef
+            state.loaded = True
+            state.loading = False
+            
+            # 通知所有等待的 future
+            if state.future and not state.future.done():
+                state.future.set_result(None)
+        
+        if ef:
             log.info(f"Finish loading SentenceTransformer.")
-        except Exception as e:
-            log.debug(f"Error loading SentenceTransformer: {e}")
-
-    return ef
+        
+        return ef
+    except Exception as e:
+        log.debug(f"Error loading SentenceTransformer: {e}")
+        with state.lock:
+            state.loading = False
+            state.loaded = False
+            
+            # 通知所有等待的 future 发生错误
+            if state.future and not state.future.done():
+                state.future.set_exception(e)
+        
+        return None
 
 
 def get_rf(
@@ -1232,7 +1332,7 @@ async def update_rag_config(
 ####################################
 
 
-async def save_docs_to_vector_db(
+def save_docs_to_vector_db(
     request: Request,
     docs,
     collection_name,
@@ -1261,13 +1361,17 @@ async def save_docs_to_vector_db(
     log.debug(
         f"save_docs_to_vector_db: document {_get_docs_info(docs)} {collection_name}"
     )
+    log.error(f"[test]save_docs_to_vector_db original docs:{docs} collection_name:{collection_name} metadata:{metadata} overwrite:{overwrite} split:{split} add:{add}")
 
     # Check if entries with the same hash (metadata.hash) already exist
     if metadata and "hash" in metadata:
+        res = VECTOR_DB_CLIENT.has_collection(collection_name=collection_name)
+        log.error(f"[test]save_docs_to_vector_db has_collection collection_name:{collection_name} res:{res}")
         result = VECTOR_DB_CLIENT.query(
             collection_name=collection_name,
             filter={"hash": metadata["hash"]},
         )
+        log.error(f"[test]save_docs_to_vector_db query collection_name:{collection_name}, hash:{metadata['hash']} result:{result}")
 
         if result is not None:
             existing_doc_ids = result.ids[0]
@@ -1275,15 +1379,37 @@ async def save_docs_to_vector_db(
                 log.info(f"Document with hash {metadata['hash']} already exists")
                 raise ValueError(ERROR_MESSAGES.DUPLICATE_CONTENT)
 
+
+    # Determine text splitter type
+    text_splitter_type = request.app.state.config.TEXT_SPLITTER
+    
+    # # Check if this is an ai1s_sites related file
+    # is_ai1s_site_file = False
+    # # Check metadata for file_id
+    # if metadata and "file_id" in metadata:
+    #     is_ai1s_site_file = metadata["file_id"].startswith(AI_SITES_FILE_ID_PREFIX)
+    # # Check each doc's metadata for file_id
+    # if not is_ai1s_site_file:
+    #     for doc in docs:
+    #         doc_metadata = getattr(doc, "metadata", {})
+    #         if doc_metadata and "file_id" in doc_metadata:
+    #             if doc_metadata["file_id"].startswith(AI_SITES_FILE_ID_PREFIX):
+    #                 is_ai1s_site_file = True
+    #                 break
+    # # Force markdown_header for ai1s_sites files
+    # if is_ai1s_site_file:
+    #     log.error("[test]Using forced markdown_header text splitter for ai1s_site file")
+    #     text_splitter_type = "markdown_header"
+    
     if split:
-        if request.app.state.config.TEXT_SPLITTER in ["", "character"]:
+        if text_splitter_type in ["", "character"]:
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=request.app.state.config.CHUNK_SIZE,
                 chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
                 add_start_index=True,
             )
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "token":
+        elif text_splitter_type == "token":
             log.info(
                 f"Using token text splitter: {request.app.state.config.TIKTOKEN_ENCODING_NAME}"
             )
@@ -1296,7 +1422,7 @@ async def save_docs_to_vector_db(
                 add_start_index=True,
             )
             docs = text_splitter.split_documents(docs)
-        elif request.app.state.config.TEXT_SPLITTER == "markdown_header":
+        elif text_splitter_type == "markdown_header":
             log.info("Using markdown header text splitter")
 
             # Define headers to split on - covering most common markdown header levels
@@ -1348,6 +1474,7 @@ async def save_docs_to_vector_db(
     if len(docs) == 0:
         raise ValueError(ERROR_MESSAGES.EMPTY_CONTENT)
 
+    log.error(f"[test]splitted(method:{request.app.state.config.TEXT_SPLITTER}, CHUNK_SIZE:{request.app.state.config.CHUNK_SIZE}, CHUNK_OVERLAP:{request.app.state.config.CHUNK_OVERLAP}) results len: {len(docs)}, head(5): {docs[:5]}")
     texts = [doc.page_content for doc in docs]
     metadatas = [
         {
@@ -1413,32 +1540,23 @@ async def save_docs_to_vector_db(
         #         user=user,
         #     )
         # )
-        # # Run async embedding in sync context
-        # try:
-        #     loop = asyncio.get_running_loop()
-        #     # 如果有运行中的事件循环，使用 create_task 或 run_until_complete
-        #     embeddings = loop.run_until_complete(
-        #         embedding_function(
-        #             list(map(lambda x: x.replace("\n", " "), texts)),
-        #             prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-        #             user=user,
-        #         )
-        #     )
-        # except RuntimeError:
-        #     # 如果没有运行中的事件循环，使用 asyncio.run
-        #     embeddings = asyncio.run(
-        #         embedding_function(
-        #             list(map(lambda x: x.replace("\n", " "), texts)),
-        #             prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-        #             user=user,
-        #         )
-        #     )
-        embeddings = await embedding_function(
-            list(map(lambda x: x.replace("\n", " "), texts)),
-            prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-            user=user,
-        )
+
+        # Run async embedding in sync context
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
         
+        # Use ThreadPoolExecutor to run async function in separate thread
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                asyncio.run,
+                embedding_function(
+                    list(map(lambda x: x.replace("\n", " "), texts)),
+                    prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+                    user=user,
+                )
+            )
+            embeddings = future.result(timeout=300)  # 5 minutes timeout
+
         log.info(f"embeddings generated {len(embeddings)} for {len(texts)} items")
 
         items = [
@@ -1471,7 +1589,7 @@ class ProcessFileForm(BaseModel):
 
 
 @router.post("/process/file")
-async def process_file(
+def process_file(
     request: Request,
     form_data: ProcessFileForm,
     user=Depends(get_verified_user),
@@ -1479,6 +1597,7 @@ async def process_file(
     """
     Process a file and save its content to the vector database.
     """
+    log.error(f"[test] process_file {form_data}")
     if user.role == "admin":
         file = Files.get_file_by_id(form_data.file_id)
     else:
@@ -1526,6 +1645,7 @@ async def process_file(
                 result = VECTOR_DB_CLIENT.query(
                     collection_name=f"file-{file.id}", filter={"file_id": file.id}
                 )
+                log.error(f"[test]process_file query result:{result}")
 
                 if result is not None and len(result.ids[0]) > 0:
                     docs = [
@@ -1637,8 +1757,7 @@ async def process_file(
                 }
             else:
                 try:
-                    # result = save_docs_to_vector_db(
-                    result = await save_docs_to_vector_db(
+                    result = save_docs_to_vector_db(
                         request,
                         docs=docs,
                         collection_name=collection_name,
@@ -1725,10 +1844,9 @@ async def process_text(
     text_content = form_data.content
     log.debug(f"text_content: {text_content}")
 
-    # result = await run_in_threadpool(
-    #     save_docs_to_vector_db, request, docs, collection_name, user=user
-    # )
-    result = await save_docs_to_vector_db(request, docs, collection_name, user=user)
+    result = await run_in_threadpool(
+        save_docs_to_vector_db, request, docs, collection_name, user=user
+    )
     if result:
         return {
             "status": True,
@@ -1758,9 +1876,8 @@ async def process_web(
         log.debug(f"text_content: {content}")
 
         if not request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:
-            # await run_in_threadpool(
-            #     save_docs_to_vector_db,
-            await save_docs_to_vector_db(
+            await run_in_threadpool(
+                save_docs_to_vector_db,
                 request,
                 docs,
                 collection_name,
@@ -2193,9 +2310,8 @@ async def process_web_search(
             )
 
             try:
-                # await run_in_threadpool(
-                #     save_docs_to_vector_db,
-                await save_docs_to_vector_db(
+                await run_in_threadpool(
+                    save_docs_to_vector_db,
                     request,
                     docs,
                     collection_name,
@@ -2508,9 +2624,8 @@ async def process_files_batch(
     # Save all documents in one batch
     if all_docs:
         try:
-            # await run_in_threadpool(
-            #     save_docs_to_vector_db,
-            await save_docs_to_vector_db(
+            await run_in_threadpool(
+                save_docs_to_vector_db,
                 request,
                 all_docs,
                 collection_name,

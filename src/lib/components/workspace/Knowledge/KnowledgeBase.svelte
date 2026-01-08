@@ -33,6 +33,14 @@
 		updateFileFromKnowledgeById,
 		updateKnowledgeById
 	} from '$lib/apis/knowledge';
+	import {
+		importSinglePost,
+		importAllPosts,
+		getImportProgress,
+
+		getImportStatistics
+
+	} from '$lib/apis/ai1s_sites';
 	import { blobToFile } from '$lib/utils';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -41,6 +49,7 @@
 
 	import AddContentMenu from './KnowledgeBase/AddContentMenu.svelte';
 	import AddTextContentModal from './KnowledgeBase/AddTextContentModal.svelte';
+	import ImportAiSites from './KnowledgeBase/ImportAiSites.svelte';
 
 	import SyncConfirmDialog from '../../common/ConfirmDialog.svelte';
 	import RichTextInput from '$lib/components/common/RichTextInput.svelte';
@@ -52,6 +61,7 @@
 	import Search from '$lib/components/icons/Search.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import FilesOverlay from '$lib/components/chat/MessageInput/FilesOverlay.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	let largeScreen = true;
 
@@ -76,8 +86,14 @@
 	let showAddTextContentModal = false;
 	let showSyncConfirmModal = false;
 	let showAccessControlModal = false;
+	let showImportAISitesModal = false;
 
 	let inputFiles = null;
+	// let importPostId = '';
+	let importedPosts = [];
+	let isImporting = false;
+	let importTaskId = null;
+	let importProgress = { total_post_num: 0, processed_post_num: 0, status: 'idle' };
 
 	let filteredItems = [];
 	$: if (knowledge && knowledge.files) {
@@ -418,21 +434,118 @@
 	};
 
 	const deleteFileHandler = async (fileId) => {
+	try {
+		console.log('Starting file deletion process for:', fileId);
+
+		// Remove from knowledge base only
+		const updatedKnowledge = await removeFileFromKnowledgeById(localStorage.token, id, fileId);
+
+		console.log('Knowledge base updated:', updatedKnowledge);
+
+		if (updatedKnowledge) {
+			knowledge = updatedKnowledge;
+			toast.success($i18n.t('File removed successfully.'));
+		}
+	} catch (e) {
+		console.error('Error in deleteFileHandler:', e);
+		toast.error(`${e}`);
+	}
+};
+
+	// AI Sites Import Functions
+	const importSinglePostHandler = async (importPostId) => {
 		try {
-			console.log('Starting file deletion process for:', fileId);
-
-			// Remove from knowledge base only
-			const updatedKnowledge = await removeFileFromKnowledgeById(localStorage.token, id, fileId);
-
-			console.log('Knowledge base updated:', updatedKnowledge);
-
-			if (updatedKnowledge) {
-				knowledge = updatedKnowledge;
-				toast.success($i18n.t('File removed successfully.'));
+			const data = await importSinglePost(localStorage.token, knowledge.id, importPostId);
+			if (data) {
+				toast.success($i18n.t(`Post ${importPostId} imported successfully`));
+				// Refresh knowledge
+				knowledge = await getKnowledgeById(localStorage.token, knowledge.id);
+			} else {
+				toast.error($i18n.t('Failed to import post'));
 			}
-		} catch (e) {
-			console.error('Error in deleteFileHandler:', e);
-			toast.error(`${e}`);
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	};
+
+	const importAllPostsHandler = async () => {
+	try {
+		isImporting = true;
+		const data = await importAllPosts(localStorage.token, knowledge.id);
+		if (data) {
+			importTaskId = data.task_id;
+			importProgress = { 
+				total_post_num: data.total_post_num, 
+				processed_post_num: 0, 
+				status: 'running' 
+			};
+			toast.success($i18n.t(`Import task started successfully`));
+			// Start polling for progress
+			pollImportProgress();
+		} else {
+			toast.error($i18n.t('Failed to start import task'));
+			isImporting = false;
+		}
+	} catch (error) {
+		toast.error(`${error}`);
+		isImporting = false;
+	}
+};
+
+const pollImportProgress = async () => {
+	if (!importTaskId) return;
+	
+	try {
+		const data = await getImportProgress(localStorage.token, knowledge.id, importTaskId);
+		importProgress = {
+			total_post_num: data.total_post_num,
+			processed_post_num: data.processed_post_num,
+			status: data.status
+		};
+		
+		if (data.status === 'running') {
+			setTimeout(pollImportProgress, 1000); // Poll every second
+		} else if (data.status === 'completed') {
+			toast.success($i18n.t(`Import completed successfully`));
+			// Refresh knowledge
+			knowledge = await getKnowledgeById(localStorage.token, knowledge.id);
+			isImporting = false;
+		} else if (data.status === 'error') {
+			toast.error($i18n.t(`Import failed: ${data.error}`));
+			isImporting = false;
+		}
+	} catch (error) {
+		toast.error(`${error}`);
+		isImporting = false;
+	}
+};
+
+	const listImportedPostsHandler = async () => {
+		try {
+			const data = await listImportedPosts(localStorage.token, knowledge.id);
+			if (data) {
+				importedPosts = data.posts;
+			} else {
+				toast.error($i18n.t('Failed to list posts'));
+			}
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	};
+
+	const deletePostHandler = async (postId) => {
+		try {
+			const data = await deletePost(localStorage.token, knowledge.id, postId);
+			if (data) {
+				toast.success($i18n.t(`Post ${postId} deleted successfully`));
+				importedPosts = importedPosts.filter(post => post.post_id !== postId);
+				// Refresh knowledge
+				knowledge = await getKnowledgeById(localStorage.token, knowledge.id);
+			} else {
+				toast.error($i18n.t('Failed to delete post'));
+			}
+		} catch (error) {
+			toast.error(`${error}`);
 		}
 	};
 
@@ -465,6 +578,18 @@
 			}
 		} finally {
 			isSaving = false;
+		}
+	};
+
+	const resetKnowledgeHandler = async () => {
+		if (confirm($i18n.t('Are you sure you want to reset this knowledge base? This action cannot be undone.'))) {
+			try {
+				await resetKnowledgeById(localStorage.token, knowledge.id);
+				knowledge = await getKnowledgeById(localStorage.token, knowledge.id);
+				toast.success($i18n.t('Knowledge base reset successfully.'));
+			} catch (error) {
+				toast.error(`${error}`);
+			}
 		}
 	};
 
@@ -635,6 +760,14 @@
 
 		if (res) {
 			knowledge = res;
+			// // Check if this is ai_sites knowledge and ensure it's public
+			// if (knowledge.name === 'ai_sites' && knowledge.access_control !== 'public') {
+			// 	knowledge.access_control = 'public';
+			// 	await updateKnowledgeById(localStorage.token, id, knowledge).catch((e) => {
+			// 		toast.error(`${e}`);
+			// 		return null;
+			// 	});
+			// }
 		} else {
 			goto('/workspace/knowledge');
 		}
@@ -733,21 +866,33 @@
 							/>
 						</div>
 
-						<div class="self-center shrink-0">
-							<button
-								class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
-								type="button"
-								on:click={() => {
-									showAccessControlModal = true;
-								}}
-							>
-								<LockClosed strokeWidth="2.5" className="size-3.5" />
+						<div class="self-center shrink-0 flex gap-2">
+					<button
+						class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
+						type="button"
+						on:click={() => {
+							showAccessControlModal = true;
+						}}
+					>
+						<LockClosed strokeWidth="2.5" className="size-3.5" />
 
-								<div class="text-sm font-medium shrink-0">
-									{$i18n.t('Access')}
-								</div>
-							</button>
+						<div class="text-sm font-medium shrink-0">
+							{$i18n.t('Access')}
 						</div>
+					</button>
+
+					<button
+						class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
+						type="button"
+						on:click={() => {
+							resetKnowledgeHandler();
+						}}
+					>
+						<div class="text-sm font-medium shrink-0">
+							{$i18n.t('Reset')}
+						</div>
+					</button>
+				</div>
 					</div>
 
 					<div class="flex w-full px-1">
@@ -924,6 +1069,9 @@
 												uploadDirectoryHandler();
 											} else if (e.detail.type === 'text') {
 												showAddTextContentModal = true;
+											} else if (e.detail.type === 'ai_sites') {
+												console.info("import e:", e, " knowledge:", knowledge);
+												showImportAISitesModal = true;
 											} else {
 												document.getElementById('files-input').click();
 											}
@@ -966,5 +1114,26 @@
 		</div>
 	{:else}
 		<Spinner className="size-5" />
-	{/if}
+{/if}
 </div>
+
+<!-- Import AI Sites Modal -->
+{#if knowledge?.name === 'ai_sites'}
+	<ImportAiSites 
+        bind:show={showImportAISitesModal} 
+        bind:importedPosts={importedPosts}
+        bind:isImporting={isImporting}
+        fetchStatistics={async () => {
+            try {
+                const result = await getImportStatistics(localStorage.token, knowledge.id);
+				console.info('fetchStatistics result:', result);
+				return result;
+            } catch (error) {
+                console.error('Error fetching statistics:', error);
+                return null;
+            }
+        }}
+        on:importSingle={(e) => importSinglePostHandler(e.detail.postId)}
+        on:importAll={importAllPostsHandler}
+    />
+{/if}

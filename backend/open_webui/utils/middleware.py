@@ -986,6 +986,7 @@ async def chat_completion_files_handler(
 
         try:
             # Directly await async get_sources_from_items (no thread needed - fully async now)
+            log.error(f"[test] get_sources_from_items input files: {files}, hybrid_search: {request.app.state.config.ENABLE_RAG_HYBRID_SEARCH}, full_context: {all_full_context or request.app.state.config.RAG_FULL_CONTEXT}")
             sources = await get_sources_from_items(
                 request=request,
                 items=files,
@@ -1537,6 +1538,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     )
 
         context_string = context_string.strip()
+        log.error(f"[test] context_string: {context_string}")
         if prompt is None:
             raise Exception("No user message found")
 
@@ -1550,6 +1552,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data["messages"],
                 append=False,
             )
+            log.error(f"[test] form_data messages: {form_data['messages']}")
 
     # If there are citations, add them to the data_items
     sources = [

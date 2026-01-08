@@ -787,9 +787,20 @@ def get_embedding_function(
     if embedding_engine == "":
         # Sentence transformers: CPU-bound sync operation
         async def async_embedding_function(query, prefix=None, user=None):
+            # 导入异步加载函数
+            from open_webui.routers.retrieval import load_ef_async
+            
+            # 检查embedding_function是否为None（即模型是否正在加载）
+            if embedding_function is None:
+                # 等待模型加载完成
+                ef = await load_ef_async(embedding_engine, embedding_model)
+            else:
+                ef = embedding_function
+            
+            # 使用加载好的模型进行编码
             return await asyncio.to_thread(
                 (
-                    lambda query, prefix=None: embedding_function.encode(
+                    lambda query, prefix=None: ef.encode(
                         query, **({"prompt": prefix} if prefix else {})
                     ).tolist()
                 ),
@@ -1175,6 +1186,7 @@ async def get_sources_from_items(
                 del item["data"]
             query_results.append({**query_result, "file": item})
 
+    log.error(f"[test] get_sources_from_items len(query_results): {len(query_results)}, head(5): {query_results[:5]}")
     sources = []
     for query_result in query_results:
         try:

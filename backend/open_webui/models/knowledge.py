@@ -3,6 +3,7 @@ import logging
 import time
 from typing import Optional
 import uuid
+import traceback
 
 from open_webui.internal.db import Base, get_db
 from open_webui.env import SRC_LOG_LEVELS

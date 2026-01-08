@@ -99,7 +99,7 @@ def has_access_to_file(
 ############################
 
 
-async def process_uploaded_file(request, file, file_path, file_item, file_metadata, user):
+def process_uploaded_file(request, file, file_path, file_item, file_metadata, user):
     try:
         if file.content_type:
             stt_supported_content_types = getattr(
@@ -118,7 +118,7 @@ async def process_uploaded_file(request, file, file_path, file_item, file_metada
                 file_path = Storage.get_file(file_path)
                 result = transcribe(request, file_path, file_metadata, user)
 
-                await process_file(
+                process_file(
                     request,
                     ProcessFileForm(
                         file_id=file_item.id, content=result.get("text", "")
@@ -128,7 +128,7 @@ async def process_uploaded_file(request, file, file_path, file_item, file_metada
             elif (not file.content_type.startswith(("image/", "video/"))) or (
                 request.app.state.config.CONTENT_EXTRACTION_ENGINE == "external"
             ):
-                await process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
+                process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
             else:
                 raise Exception(
                     f"File type {file.content_type} is not supported for processing"
@@ -137,7 +137,7 @@ async def process_uploaded_file(request, file, file_path, file_item, file_metada
             log.info(
                 f"File type {file.content_type} is not provided, but trying to process anyway"
             )
-            await process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
+            process_file(request, ProcessFileForm(file_id=file_item.id), user=user)
     except Exception as e:
         log.error(f"Error processing file: {file_item.id}")
         Files.update_file_data_by_id(
@@ -178,6 +178,7 @@ def upload_file_handler(
     process_in_background: bool = Query(True),
     user=Depends(get_verified_user),
     background_tasks: Optional[BackgroundTasks] = None,
+    id: Optional[str] = None,
 ):
     log.info(f"file.content_type: {file.content_type}")
 
@@ -213,7 +214,8 @@ def upload_file_handler(
                 )
 
         # replace filename with uuid
-        id = str(uuid.uuid4())
+        if not id:
+            id = str(uuid.uuid4())
         name = filename
         filename = f"{id}_{filename}"
         contents, file_path = Storage.upload_file(
@@ -236,6 +238,7 @@ def upload_file_handler(
                     "path": file_path,
                     "data": {
                         **({"status": "pending"} if process else {}),
+                        # **({"status": "pending"} if process else {"status": "completed"}), # TODO test fix embedding twice
                     },
                     "meta": {
                         "name": name,
@@ -271,7 +274,8 @@ def upload_file_handler(
                 return {"status": True, **file_item.model_dump()}
         else:
             if file_item:
-                return file_item
+                # return file_item
+                return {"status": True, **file_item.model_dump()}
             else:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -515,7 +519,7 @@ async def update_file_data_content_by_id(
         or has_access_to_file(id, "write", user)
     ):
         try:
-            await process_file(
+            process_file(
                 request,
                 ProcessFileForm(file_id=id, content=form_data.content),
                 user=user,

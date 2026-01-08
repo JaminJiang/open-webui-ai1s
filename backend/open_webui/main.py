@@ -93,6 +93,7 @@ from open_webui.routers import (
     users,
     utils,
     scim,
+    ai1s_sites,
 )
 
 from open_webui.routers.retrieval import (
@@ -983,9 +984,81 @@ app.state.YOUTUBE_LOADER_TRANSLATION = None
 
 
 try:
-    app.state.ef = get_ef(
-        app.state.config.RAG_EMBEDDING_ENGINE, app.state.config.RAG_EMBEDDING_MODEL
-    )
+    # 异步加载嵌入模型，不阻塞程序启动
+    log.error(f"load model app.state.config.RAG_EMBEDDING_ENGINE:{app.state.config.RAG_EMBEDDING_ENGINE}, app.state.config.RAG_EMBEDDING_MODEL:{app.state.config.RAG_EMBEDDING_MODEL}")
+    if app.state.config.RAG_EMBEDDING_ENGINE == "" and app.state.config.RAG_EMBEDDING_MODEL:
+        # 启动异步任务加载模型，但不等待完成
+        import asyncio
+        import threading
+        from open_webui.routers.retrieval import load_ef_async
+        
+        # 存储初始的ef状态（None表示正在异步加载）
+        app.state.ef = None
+        
+        # 创建一个异步任务来加载模型
+        async def load_embedding_model():
+            log.info(f"main load_embedding_model.")
+            try:
+                # 异步加载模型
+                ef = await load_ef_async(
+                    app.state.config.RAG_EMBEDDING_ENGINE,
+                    app.state.config.RAG_EMBEDDING_MODEL
+                )
+                # 更新app.state.ef为加载好的模型
+                app.state.ef = ef
+                
+                # 模型加载完成后，重新创建EMBEDDING_FUNCTION
+                app.state.EMBEDDING_FUNCTION = get_embedding_function(
+                    app.state.config.RAG_EMBEDDING_ENGINE,
+                    app.state.config.RAG_EMBEDDING_MODEL,
+                    embedding_function=app.state.ef,
+                    url=(
+                        app.state.config.RAG_OPENAI_API_BASE_URL
+                        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                        else (
+                            app.state.config.RAG_OLLAMA_BASE_URL
+                            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
+                            else app.state.config.RAG_AZURE_OPENAI_BASE_URL
+                        )
+                    ),
+                    key=(
+                        app.state.config.RAG_OPENAI_API_KEY
+                        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                        else (
+                            app.state.config.RAG_OLLAMA_API_KEY
+                            if app.state.config.RAG_EMBEDDING_ENGINE == "ollama"
+                            else app.state.config.RAG_AZURE_OPENAI_API_KEY
+                        )
+                    ),
+                    embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+                    azure_api_version=(
+                        app.state.config.RAG_AZURE_OPENAI_API_VERSION
+                        if app.state.config.RAG_EMBEDDING_ENGINE == "azure_openai"
+                        else None
+                    ),
+                    enable_async=app.state.config.ENABLE_ASYNC_EMBEDDING,
+                )
+            except Exception as e:
+                log.error(f"Error loading embedding model asynchronously: {e}")
+        
+        # 在后台线程中运行异步任务
+        def run_async_task():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(load_embedding_model())
+            finally:
+                loop.close()
+        
+        # 启动后台线程
+        thread = threading.Thread(target=run_async_task, daemon=True)
+        thread.start()
+        log.info(f"main load_embedding_model task created.")
+    else:
+        # 非SentenceTransformer模型，同步加载
+        app.state.ef = get_ef(app.state.config.RAG_EMBEDDING_ENGINE, app.state.config.RAG_EMBEDDING_MODEL)
+    
+    # 同步加载reranking模型（如果需要）
     if (
         app.state.config.ENABLE_RAG_HYBRID_SEARCH
         and not app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
@@ -1398,6 +1471,7 @@ app.include_router(
     evaluations.router, prefix="/api/v1/evaluations", tags=["evaluations"]
 )
 app.include_router(utils.router, prefix="/api/v1/utils", tags=["utils"])
+app.include_router(ai1s_sites.router, prefix="/api/v1/ai1s_sites", tags=["ai1s_sites"])
 
 # SCIM 2.0 API for identity management
 if ENABLE_SCIM:

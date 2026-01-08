@@ -6,15 +6,15 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 export default defineConfig({
 	plugins: [
 		sveltekit(),
-		viteStaticCopy({
-			targets: [
-				{
-					src: 'node_modules/onnxruntime-web/dist/*.jsep.*',
+		// viteStaticCopy({
+		// 	targets: [
+		// 		{
+		// 			src: 'node_modules/onnxruntime-web/dist/*.jsep.*',
 
-					dest: 'wasm'
-				}
-			]
-		})
+		// 			dest: 'wasm'
+		// 		}
+		// 	]
+		// })
 	],
 	define: {
 		APP_VERSION: JSON.stringify(process.env.npm_package_version),

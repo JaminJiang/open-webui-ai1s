@@ -839,6 +839,7 @@ for file_path in (FRONTEND_BUILD_DIR / "static").glob("**/*"):
         target_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copyfile(file_path, target_path)
+            # log.info(f"[test] Copied {file_path} to {target_path}")
         except Exception as e:
             logging.error(f"An error occurred: {e}")
 
@@ -851,6 +852,7 @@ if frontend_favicon.exists():
         logging.error(f"An error occurred: {e}")
 
 frontend_splash = FRONTEND_BUILD_DIR / "static" / "splash.png"
+# log.info(f"[test] STATIC_DIR: {STATIC_DIR}, OPEN_WEBUI_DIR: {OPEN_WEBUI_DIR}, FRONTEND_BUILD_DIR: {FRONTEND_BUILD_DIR}")
 
 if frontend_splash.exists():
     try:
